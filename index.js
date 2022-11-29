@@ -158,46 +158,44 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     //  Loop!
 
     let page = 0;
+    const imageXpath = By.xpath(`//ol/li`);
+    await driver.wait(until.elementsLocated(imageXpath), 5000);
+    const images = await driver.findElements(imageXpath);
+
+    console.log(`Found: ${images.length} image containers.`);
 
     const getCurrentPages = async () => {
-      console.log('getCurrentPages running!');
-
-      //  Get current page
-      const imageXpath = By.xpath(`//ol/li`);
-      await driver.wait(until.elementsLocated(imageXpath));
-      const images = await driver.findElements(imageXpath);
-
-      for(let image of images) {
+      console.log(`Retrieving chapter ${mangaChapter} page ${page}...`);
+      const image = images[page];
 
         //  Wait until the image has a background-image tag
         await driver.wait(
-          (async () => await image.getCssValue('background-image') !== 'none')
+          (async () => await image.getCssValue('background-image') !== 'none'), 10000
         );
         const background = await image.getCssValue('background-image');
-        console.log('Length: ', background.length);
 
         if (background !== 'none') {
             base64toImage(background, path.join(outDir, `ch${String(mangaChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`));
             page++;
 
-            const btnPath = By.xpath(`//a[contains(@class, 'js-next-link')]`);
-            await driver.wait(until.elementLocated(btnPath));
-            const button = await driver.findElement(btnPath);
-            await button.click();
-            console.log('getCurrentPages finished!');
+            if (page === 0 || page % 2 === 0) {
+              const btnPath = By.xpath(`//a[contains(@class, 'js-next-link')]`);
+              await driver.wait(until.elementLocated(btnPath));
+              const button = await driver.findElement(btnPath);
+              await button.click();
+            }
 
             if (page < images.length)
-              await getCurrentPages();
+              await getCurrentPages()
+
+            else 
+              console.log('All pages finished!');
+
         } else
           console.error(`Image on page ${page} cannot be loaded!`);
-      }
-
     }      
 
-
-    console.log('It starts!');
     await getCurrentPages();
-    console.log('It ends!');
 
   } catch(err) {
     fatalError(err.message);
