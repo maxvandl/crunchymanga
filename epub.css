@@ -1,0 +1,36 @@
+@font-face {
+    font-family: "Georgia";
+    font-style: normal;
+    font-weight: normal;
+    src : url("./Georgia.ttf");
+}
+
+html {
+    direction: rtl;
+}
+
+body {
+    font-family: Georgia;
+    background-color: #fff;
+    color: #000;
+    margin: 0;
+    padding: 0;
+    line-height: 1.5em;
+}
+
+a {
+    text-decoration: none;
+    color: #000;
+}
+
+a:hover {
+    text-decoration: underline;
+}
+
+img {
+    padding: 0;
+    height: 100%;
+    width: auto;
+    margin: auto auto auto auto;
+    page-break-before: always;
+}

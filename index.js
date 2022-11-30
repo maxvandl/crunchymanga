@@ -1,9 +1,12 @@
 import * as fs from 'fs';
-import { fatalError, base64toImage } from './utils.js';
+import { fatalError, base64toImage, deleteOutput } from './utils.js';
+import { generateEpub  } from './epubgen.js';
 import inquirer from 'inquirer';
 import { LocalStorage } from 'node-localstorage';
 import sanitize from 'sanitize-filename';
+import imgToPDF from 'image-to-pdf';
 import * as path from 'path';
+import fetch from 'node-fetch';
 
 import { Builder, Browser, By, Key, until } from 'selenium-webdriver';
 
@@ -14,6 +17,8 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
 //  Query parameters
 
   const browserChoices = ['Chrome', 'Firefox', 'Edge', 'Opera'];
+  const formatChoices = ['Images - each page is a JPEG file', 'PDF file', 'EPUB file']
+  const overwriteChoices = ['Delete old download and start over', 'Download new images only (resume interrupted download)', 'Skip downloading entirely'];
 
   const params = await inquirer.prompt([
   {
@@ -58,17 +63,28 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
   },
   {
       type: 'rawlist',
-      name: 'method',
+      name: 'format',
       message: 'How shall we save the manga?',
-      default: localStorage.getItem('crunchyroll_method'),
-      choices: ['Images', 'PDF', 'EPUB']
+      default: localStorage.getItem('crunchyroll_format'),
+      choices: formatChoices
+  },
+  {
+      type: 'rawlist',
+      name: 'pdf_pagesize',
+      message: 'PDF page size?',
+      default: localStorage.getItem('crunchyroll_pdf_pagesize') || 'LETTER',
+      choices: Object.keys(imgToPDF.sizes),
+      when: answers => {
+        console.log(JSON.stringify(answers, null, 2));
+        return answers.format === formatChoices[1]
+      }
   },
   {
       type: 'rawlist',
       name: 'overwrite',
-      message: 'Overwrite previous download if exists?',
+      message: 'What to do if a previous download exists?',
       default: localStorage.getItem('crunchyroll_overwrite'),
-      choices: ['Yes, overwrite', 'No, stop if exists']
+      choices: overwriteChoices
   },
   {
       type: 'rawlist',
@@ -85,7 +101,8 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
   localStorage.setItem('crunchyroll_password', params.password);
   localStorage.setItem('crunchyroll_url', params.url);
   localStorage.setItem('crunchyroll_browser', params.browser);
-  localStorage.setItem('crunchyroll_method', params.method);
+  localStorage.setItem('crunchyroll_format', params.format);
+  localStorage.setItem('crunchyroll_pdf_pagesize', params.pdf_pagesize || 'LETTER');
   localStorage.setItem('crunchyroll_overwrite', params.overwrite);
 
 //  Launch browser and navigate to Crunchyroll
@@ -93,9 +110,10 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
 let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][browserChoices.findIndex(x => x === params.browser)];
 
 (async () => {
-  const driver = await new Builder().forBrowser(browser).build();
-
   try {
+
+    //  Load Crunchyroll
+    const driver = await new Builder().forBrowser(browser).build();
     await driver.get('https://crunchyroll.com');
 
     //  Click user profile icon
@@ -122,38 +140,65 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     await driver.findElement(passwordField).sendKeys(params.password);
     await driver.findElement(By.xpath(`//button[contains(text(), 'LOG IN')]`)).click();
 
-    //  Wait for main page to load, then go to manga URL
+    //  Wait for main page to load, then go to manga
     await driver.wait(until.elementLocated(By.xpath(`//span[contains(text(), 'Log Out')]`)));
     await driver.wait(until.elementLocated(cookieButton));
     await driver.findElement(cookieButton).click();
-    await driver.get(params.url);
 
-    //  Wait until manga reader loads
-    await driver.wait(until.elementLocated(By.id('manga_reader')));
+    //  Go to manga main page and get author info
+    const mangaMain = params.url
+      .replace(/\/manga\//g, '/comics/manga/')
+      .replace(/\/read(.*)/g, '/volumes');
 
-    //  Get manga title
-    let mangaTitle = await driver.getTitle();
-    mangaTitle = mangaTitle.replace(/Crunchyroll - Read /igm, '').replace(/ Chapter 1 Online/igm, '').trim();
-    console.log(`Manga title: "${mangaTitle}"`);
+    console.log('Getting manga data...');
+    await driver.get(mangaMain);
+    await driver.wait(until.elementLocated(By.xpath(`//h3[contains(text(), 'More Information')]`)));
 
-    let mangaChapter = params.url.match(/(\d*)$/igm)[0];
-    console.log(`Starting from chapter ${mangaChapter}`);
+    const mangaInfo = {
+      publisher: '',
+      firstPublished: '',
+      author: '',
+      artist: '',
+      copyright: '',
+      translator: '',
+      editor: '',
+      letterer: '',
+      title: ''
+    }
+
+    let mangaTitle = await driver.findElement(By.xpath("//meta[@name='title']")).getAttribute("content");
+    mangaInfo.title = mangaTitle.replace(/ - Crunchyroll/g, '');
+
+    const infoLines = await driver.findElements(By.xpath(`/html/body/div[2]/div/div[1]/div[3]/div/div[3]/ul/li[3]/ul/li`));
+    for (const [index, line] of infoLines.entries()) {
+      const dataLine = await line.getAttribute('innerHTML');
+      mangaInfo[Object.keys(mangaInfo)[index]] = dataLine.replace(/<(.*)>/gi, "").trim();
+    }
+
+    console.log(`Manga title: "${mangaInfo.title}"`);
+
+    //  Save cover image (later for the EPUB)
+    const coverXpath = By.xpath(`//img[contains(@class, 'poster')]`);
+    await driver.wait(until.elementLocated(coverXpath));
+    const coverImage = await driver.findElement(coverXpath).getAttribute('src');
 
     //  Create save directory
-    const outDir = path.join(process.cwd(), 'output', sanitize(mangaTitle));
+    const outDir = path.join(process.cwd(), 'output', sanitize(mangaInfo.title));
     console.log(`Output directory: "${outDir}"`);
 
+    let skipDownload = false;
+
     if (fs.existsSync(outDir))
-      if (params.overwrite === 'No')
-        throw new Error(`Output directory "${outDir}" already exists. Please remove it and try again.`);
-      else {
-        fs.readdirSync(outDir).forEach(file => {
-            console.log('Deleting: ', file)
-            fs.unlinkSync(path.join(outDir, file))
-          });
+      switch(params.overwrite) {
+        case overwriteChoices[0]:
+          deleteOutput(outDir);
+          break;
+        case overwriteChoices[2]:
+          skipDownload = true;
+          break;
       }
     else
-      fs.mkdirSync(outDir);
+      fs.mkdirSync(outDir);    
 
     const getCurrentChapter = async () => {
 
@@ -222,25 +267,63 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
           console.log('Looks like this was the last chapter!');
     }
 
-    await getCurrentChapter();
+    //  The download loop!
+    
+    if (!skipDownload) {
+
+      //  Download cover image
+      const coverImageResponse = await fetch(coverImage, { method: 'GET' });
+      const coverImageBlob = await coverImageResponse.blob();
+      fs.writeFileSync(path.join(outDir, 'cover.jpg'), Buffer.from(await coverImageBlob.arrayBuffer()), 'binary');
+
+      //  Go to manga reader and start grabbing
+      await driver.get(params.url);
+      await driver.wait(until.elementLocated(By.id('manga_reader')));
+
+      let mangaChapter = params.url.match(/(\d*)$/igm)[0];
+      console.log(`Downloading manga from chapter ${mangaChapter}`);
+
+      await getCurrentChapter();      
+    }
+
+    await driver.quit();
+
+    //  Done - let's save it... or not...
+    if (params.method === formatChoices[0]) {
+      console.log('All done! Bye!');
+      process.exit(0);
+    }
+
+    //  Convert downloaded images to PDF
+    if (params.format === formatChoices[1]) {
+      console.log('Exporting to PDF...');
+      const pages =  fs.readdirSync(outDir).map(file => path.join(outDir, file));
+      pages.prepend(path.join(outDir, 'cover.jpg'));
+      imgToPDF(pages, imgToPDF.sizes[params.pdf_pagesize])
+        .pipe(fs.createWriteStream(
+          path.join(process.cwd(), 'output', sanitize(mangaInfo.title) + '.pdf')
+        ));
+    }
+
+    //  Convert downloaded images to EPUB
+    if (params.format === formatChoices[2]) 
+      await generateEpub({
+        mangaInfo,
+        files: fs.readdirSync(outDir).filter(x => new RegExp(/^ch(\d{3})_p(\d{3})\.jpg/g).test(x)),
+        dir: outDir,
+        cover: path.join(outDir, 'cover.jpg'),
+        output: path.join(process.cwd(), 'output', sanitize(mangaInfo.title) + '.epub'),
+      });
+
+    deleteOutput(outDir, true);
+    console.log('All done! Bye!');
 
   } catch(err) {
+    if (typeof driver !== 'undefined')
+      await driver.quit();
     fatalError(err.message);
   } finally {
-    // await driver.quit();
     console.log('Process completed!')
   }
+  
 })();
-
-//  Save page images
-
-//  Find next chapter
-
-//  If there's no next chapter, we're done
-
-//  Convert images to PDF if needed
-
-//  Convert images to EPUB
-
-//  Done!
-
