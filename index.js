@@ -5,7 +5,7 @@ import { LocalStorage } from 'node-localstorage';
 import sanitize from 'sanitize-filename';
 import * as path from 'path';
 
-import { Builder, Browser, By, until } from 'selenium-webdriver';
+import { Builder, Browser, By, Key, until } from 'selenium-webdriver';
 
 const localStorage = new LocalStorage('./localstorage');
 
@@ -137,7 +137,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     console.log(`Manga title: "${mangaTitle}"`);
 
     let mangaChapter = params.url.match(/(\d*)$/igm)[0];
-    console.log(`Starting chapter: ${mangaChapter}`);
+    console.log(`Starting from chapter ${mangaChapter}`);
 
     //  Create save directory
     const outDir = path.join(process.cwd(), 'output', sanitize(mangaTitle));
@@ -155,47 +155,74 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     else
       fs.mkdirSync(outDir);
 
-    //  Loop!
+    const getCurrentChapter = async () => {
 
-    let page = 0;
-    const imageXpath = By.xpath(`//ol/li`);
-    await driver.wait(until.elementsLocated(imageXpath), 5000);
-    const images = await driver.findElements(imageXpath);
+        console.log(`Downloading chapter ${mangaChapter}...`);
 
-    console.log(`Found: ${images.length} image containers.`);
+        //  Pull bar to page 1
+        const barXpath = By.xpath(`/html/body/div[2]/div/div[1]/section/div/article/header/div/input`);
+        await driver.wait(until.elementLocated(barXpath), 20000);
+        const bar = await driver.findElement(barXpath);
+        await bar.click();
+        await driver.sleep(3000);
+        await bar.sendKeys(Key.HOME);
+        await driver.sleep(3000);
 
-    const getCurrentPages = async () => {
-      console.log(`Retrieving chapter ${mangaChapter} page ${page}...`);
-      const image = images[page];
+        //  Start from page 1
+        let page = 1;
+        const imageXpath = By.xpath(`//ol/li`);
+        await driver.wait(until.elementsLocated(imageXpath), 5000);
+        const images = await driver.findElements(imageXpath);
 
-        //  Wait until the image has a background-image tag
-        await driver.wait(
-          (async () => await image.getCssValue('background-image') !== 'none'), 10000
-        );
-        const background = await image.getCssValue('background-image');
+        console.log(`Found ${images.length} pages.`);
 
-        if (background !== 'none') {
-            base64toImage(background, path.join(outDir, `ch${String(mangaChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`));
-            page++;
+        const getCurrentPages = async () => {
+          console.log(`Retrieving chapter ${mangaChapter}, page ${page}...`);
+          const image = images[page-1];
 
-            if (page === 0 || page % 2 === 0) {
-              const btnPath = By.xpath(`//a[contains(@class, 'js-next-link')]`);
-              await driver.wait(until.elementLocated(btnPath));
-              const button = await driver.findElement(btnPath);
-              await button.click();
-            }
+            //  Wait until the image has a background-image tag
+            await driver.wait(
+              (async () => await image.getCssValue('background-image') !== 'none'), 10000
+            );
 
-            if (page < images.length)
-              await getCurrentPages()
+            const background = await image.getCssValue('background-image');
 
-            else 
-              console.log('All pages finished!');
+            if (background !== 'none') {
+                base64toImage(background, path.join(outDir, `ch${String(mangaChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`));
+                page++;
 
-        } else
-          console.error(`Image on page ${page} cannot be loaded!`);
-    }      
+                if (page === 1 || page % 2 !== 0) {
+                  console.log('Clicking button, going to page: ' + page);
+                  const btnPath = By.xpath(`//a[contains(@class, 'js-next-link')]`);
+                  await driver.wait(until.elementLocated(btnPath));
+                  const button = await driver.findElement(btnPath);
+                  await button.click();
+                }
 
-    await getCurrentPages();
+                if (page <= images.length)
+                  await getCurrentPages()
+                else {
+                    console.log(`All pages in chapter ${mangaChapter} finished!`);
+                    mangaChapter++;
+                    const nextUrl = params.url.match(/^https:\/\/www\.crunchyroll\.com\/manga\/(.*)\/read\//g) + String(mangaChapter);
+                    console.log(`Attempting to load ${nextUrl}`);
+                    await driver.get(nextUrl);
+                }
+
+            } else
+              console.error(`Image in chapter ${mangaChapter} page ${page} cannot be loaded!`);
+        }      
+
+        await getCurrentPages();
+
+        const notFound = await driver.findElements(By.xpath ("//*[contains(text(),'Page Not Found')]"), 1000);
+        if (!notFound.length)
+          await getCurrentChapter();
+        else
+          console.log('Looks like this was the last chapter!');
+    }
+
+    await getCurrentChapter();
 
   } catch(err) {
     fatalError(err.message);
