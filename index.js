@@ -17,8 +17,8 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
 //  Query parameters
 
   const browserChoices = ['Chrome', 'Firefox', 'Edge', 'Opera'];
-  const formatChoices = ['Images - each page is a JPEG file', 'PDF file', 'EPUB file']
-  const overwriteChoices = ['Delete old download and start over', 'Download new images only (resume interrupted download)', 'Skip downloading entirely'];
+  const formatChoices = ['Images - each page is a JPEG file', 'PDF file', 'EPUB file', 'Both PDF and EPUB']
+  const overwriteChoices = ['Delete old download and start over', 'Skip downloading entirely'];
 
   const params = await inquirer.prompt([
   {
@@ -74,10 +74,7 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
       message: 'PDF page size?',
       default: localStorage.getItem('crunchyroll_pdf_pagesize') || 'LETTER',
       choices: Object.keys(imgToPDF.sizes),
-      when: answers => {
-        console.log(JSON.stringify(answers, null, 2));
-        return answers.format === formatChoices[1]
-      }
+      when: answers => answers.format === formatChoices[1] || answers.format === formatChoices[3]
   },
   {
       type: 'rawlist',
@@ -193,16 +190,35 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
         case overwriteChoices[0]:
           deleteOutput(outDir);
           break;
-        case overwriteChoices[2]:
+        case overwriteChoices[1]:
+          console.log('Skipping download!');
           skipDownload = true;
           break;
       }
     else
-      fs.mkdirSync(outDir);    
+      fs.mkdirSync(outDir);
+
+    let mangaChapter;
+
+    if (!skipDownload) {
+
+      //  Download cover image
+      const coverImageResponse = await fetch(coverImage, { method: 'GET' });
+      const coverImageBlob = await coverImageResponse.blob();
+      fs.writeFileSync(path.join(outDir, 'cover.jpg'), Buffer.from(await coverImageBlob.arrayBuffer()), 'binary');
+
+      //  Go to manga reader and start grabbing
+      await driver.get(params.url);
+      await driver.wait(until.elementLocated(By.id('manga_reader')));
+
+      console.log('Setting mangaChapter')
+      mangaChapter = params.url.match(/(\d*)$/igm)[0];
+      console.log(`Downloading manga, starting from chapter ${mangaChapter}`);
+    }
 
     const getCurrentChapter = async () => {
 
-        console.log(`Downloading chapter ${mangaChapter}...`);
+      console.log(`Now downloading chapter ${mangaChapter}...`);
 
         //  Pull bar to page 1
         const barXpath = By.xpath(`/html/body/div[2]/div/div[1]/section/div/article/header/div/input`);
@@ -222,6 +238,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
         console.log(`Found ${images.length} pages.`);
 
         const getCurrentPages = async () => {
+          console.log('2');
           console.log(`Retrieving chapter ${mangaChapter}, page ${page}...`);
           const image = images[page-1];
 
@@ -233,6 +250,8 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
             const background = await image.getCssValue('background-image');
 
             if (background !== 'none') {
+                    console.log('3');
+
                 base64toImage(background, path.join(outDir, `ch${String(mangaChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`));
                 page++;
 
@@ -247,6 +266,8 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
                 if (page <= images.length)
                   await getCurrentPages()
                 else {
+                        console.log('4');
+
                     console.log(`All pages in chapter ${mangaChapter} finished!`);
                     mangaChapter++;
                     const nextUrl = params.url.match(/^https:\/\/www\.crunchyroll\.com\/manga\/(.*)\/read\//g) + String(mangaChapter);
@@ -268,37 +289,24 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     }
 
     //  The download loop!
-    
     if (!skipDownload) {
-
-      //  Download cover image
-      const coverImageResponse = await fetch(coverImage, { method: 'GET' });
-      const coverImageBlob = await coverImageResponse.blob();
-      fs.writeFileSync(path.join(outDir, 'cover.jpg'), Buffer.from(await coverImageBlob.arrayBuffer()), 'binary');
-
-      //  Go to manga reader and start grabbing
-      await driver.get(params.url);
-      await driver.wait(until.elementLocated(By.id('manga_reader')));
-
-      let mangaChapter = params.url.match(/(\d*)$/igm)[0];
-      console.log(`Downloading manga from chapter ${mangaChapter}`);
-
-      await getCurrentChapter();      
+      console.log(`Lofasz: ${mangaChapter}`);
+      await getCurrentChapter();
     }
 
     await driver.quit();
 
     //  Done - let's save it... or not...
-    if (params.method === formatChoices[0]) {
+    if (params.format === formatChoices[0]) {
       console.log('All done! Bye!');
       process.exit(0);
-    }
+    }    
 
     //  Convert downloaded images to PDF
-    if (params.format === formatChoices[1]) {
+    if (params.format === formatChoices[1] || params.format === formatChoices[3]) {
       console.log('Exporting to PDF...');
       const pages =  fs.readdirSync(outDir).map(file => path.join(outDir, file));
-      pages.prepend(path.join(outDir, 'cover.jpg'));
+      pages.unshift(path.join(outDir, 'cover.jpg'));
       imgToPDF(pages, imgToPDF.sizes[params.pdf_pagesize])
         .pipe(fs.createWriteStream(
           path.join(process.cwd(), 'output', sanitize(mangaInfo.title) + '.pdf')
@@ -306,7 +314,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     }
 
     //  Convert downloaded images to EPUB
-    if (params.format === formatChoices[2]) 
+    if (params.format === formatChoices[2] || params.format === formatChoices[3]) 
       await generateEpub({
         mangaInfo,
         files: fs.readdirSync(outDir).filter(x => new RegExp(/^ch(\d{3})_p(\d{3})\.jpg/g).test(x)),
@@ -314,8 +322,8 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
         cover: path.join(outDir, 'cover.jpg'),
         output: path.join(process.cwd(), 'output', sanitize(mangaInfo.title) + '.epub'),
       });
-
-    deleteOutput(outDir, true);
+    
+    // deleteOutput(outDir, true);
     console.log('All done! Bye!');
 
   } catch(err) {

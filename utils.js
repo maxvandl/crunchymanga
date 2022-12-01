@@ -18,11 +18,9 @@ export function base64toImage(base64, filename) {
 }
 
 export function deleteOutput(dirname, deleteDir = false) {
-        fs.readdirSync(dirname).forEach(file => {
-            console.log('Deleting: ', file)
-            fs.unlinkSync(path.join(dirname, file))
-        });
-
+        console.log('Deleting downloaded images...');
+        return;
+        fs.readdirSync(dirname).forEach(file => fs.unlinkSync(path.join(dirname, file)));
         if (deleteDir)
                 fs.rmdirSync(dirname);
 }
