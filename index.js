@@ -10,7 +10,6 @@ import * as jimp from 'jimp';
 import Epub from 'epub-gen';
 
 import { Builder, Browser, By, Key, until } from 'selenium-webdriver';
-import { finished } from 'stream';
 
 const localStorage = new LocalStorage('./localstorage');
 
@@ -524,7 +523,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
 //  ---------------------------------------------------------------------------------------------------------------
     }
 
-    // deleteOutput(outDir, true);
+    deleteOutput(outDir, true);
 
   } catch(err) {
     if (typeof driver !== 'undefined')
