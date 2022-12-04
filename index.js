@@ -10,6 +10,7 @@ import * as jimp from 'jimp';
 import Epub from 'epub-gen';
 
 import { Builder, Browser, By, Key, until } from 'selenium-webdriver';
+import { finished } from 'stream';
 
 const localStorage = new LocalStorage('./localstorage');
 
@@ -56,6 +57,17 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
     }
   },
   {
+    type: 'input',
+    name: 'resumeUrl',
+    message: 'Continue an interrupted download? Enter the URL to the chapter to continue from or Enter to skip:',
+    default: '',
+    validate(value) {
+      if (!value || (/^https:\/\/(www\.)?crunchyroll.com\/manga\/(.+)\/read\/[\d\.\-\#]+$/ig).test(value))
+        return true;
+      throw Error('Invalid URL. The correct format is: https://crunchyroll.com/manga/MANGA_TITLE/read/CHAPTER');
+  }
+  },
+  {
       type: 'rawlist',
       name: 'browser',
       message: 'Which browser shall we use?',
@@ -83,6 +95,7 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
       message: 'Divide export file?',
       default: localStorage.getItem('crunchyroll_divideChapters'),
       choices: divideChaptersChoices,
+      when: answers => formatChoices.findIndex(choice => choice === answers.format) > 0
   },
   {
       type: 'rawlist',
@@ -201,18 +214,24 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     }
     
     //  Get whether the right or the left carousel arrow is active
+
     const clickArrow = async (side) => {
+      console.log('Going to:', side)
       let arrow = By.xpath(`//a[contains(@class, 'collection-carousel-${side}arrow')]`);
       await driver.wait(until.elementLocated(arrow));
       const arrowElement = await driver.findElement(arrow);
-      const arrowClasses = await arrowElement.getAttribute('class');
 
-      if (arrowClasses.includes('disabled'))
-        return;
+      let finished = false;
+    
+      do {
+        await arrowElement.click();
+        await driver.wait(async () => {
+          const tempClasses = await arrowElement.getAttribute('class');
+          return !tempClasses.includes('loading');
+        });
 
-      await arrowElement.click();
-      await driver.wait(async () => !(await arrowElement.getAttribute('class')).includes('loading'));
-      await clickArrow(side);
+        finished = (await arrowElement.getAttribute('class')).includes('disabled');
+      } while (!finished);
     }
 
     //  Click all the way left and right
@@ -264,9 +283,11 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     const outDir = path.join(process.cwd(), 'output', sanitize(mangaData.title));
     console.log(`Output directory: "${outDir}"`);
 
-    if (fs.existsSync(outDir))
+    if (fs.existsSync(outDir)) {
+      if (!params.resumeUrl)
         await deleteOutput(outDir)
-    else
+    }
+      else
         fs.mkdirSync(outDir);
 
     //  Download cover image
@@ -282,7 +303,27 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
 //  -----------------------------------------------------------------------------------------------------------
 
     let currentChapter = 0;
-    const getCurrentChapter = async () => {
+
+    //  Find starting chapter if it was specified
+    if (!!params.resumeUrl) {
+
+      //  Find which chapter has the same URL as the resume URL
+      currentChapter = mangaData.chapters.findIndex(chapter => chapter.url === params.resumeUrl.trim());
+      if (currentChapter === -1)
+        fatalError('The specified chapter doesn\'t seem to exist!');
+
+      //  Delete all images from this chapter
+      fs.readdirSync(outDir)
+        .filter(x => Number(x.substring(0, 3)) >= currentChapter)
+        .forEach(filename => fs.unlinkSync(filename));
+
+      console.log(`Skipping to: ${mangaData.chapters[currentChapter].title}`);
+    }
+
+//  ===========================================================================================================================
+
+    //  Loop to process all chapters
+    do {
 
       console.log(`Now downloading ${mangaData.chapters[currentChapter].title}...`);
 
@@ -314,86 +355,79 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       await bar.sendKeys(Key.HOME);
       await driver.sleep(3000);
 
-      //  Start from page 1
-      let page = 1;
+      let page = 0;
       const imageXpath = By.xpath(`//ol/li`);
       await driver.wait(until.elementsLocated(imageXpath));
       const images = await driver.findElements(imageXpath);
 
-      console.log(`Found ${images.length} pages.`);
+      console.log(`Chapter has ${images.length} pages.`);
 
-      const getCurrentPages = async () => {
+      //  Loop to get pages
+      do {
         console.log(`Retrieving ${mangaData.chapters[currentChapter].title}, page ${page}...`);
-        const image = images[page-1];
+        const image = images[page];
 
-          //  Wait until the image has a background-image tag
-          await driver.wait(
-            (async () => await image.getCssValue('background-image') !== 'none'), 10000
-          );
+        //  Wait until the image has a background-image tag
+        await driver.wait(
+          (async () => await image.getCssValue('background-image') !== 'none'), 10000
+        );
 
-          //  Get background image
-          const background = await image.getCssValue('background-image');
+        //  Get background image
+        const background = await image.getCssValue('background-image');
 
-          if (background !== 'none') {
-            
-              //  Check if this is a double page (width > height)
-              let pageImage = await jimp.default.read(base64toImage(background));
-              const pageWidth = pageImage.getWidth();
-              const pageHeight = pageImage.getHeight();
+        if (background !== 'none') {
+          
+            //  Check if this is a double page (width > height)
+            let pageImage = await jimp.default.read(base64toImage(background));
+            const pageWidth = pageImage.getWidth();
+            const pageHeight = pageImage.getHeight();
 
-              //  If double, cut it into two files
-              if (pageWidth > pageHeight) {
-                const halfWidth = Math.round(pageWidth / 2);
+            //  If double, cut it into two files
+            if (pageWidth > pageHeight) {
+              const halfWidth = Math.round(pageWidth / 2);
 
-                //  Save double images into two pages
-                const outputFile1 = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`);
-                await pageImage.crop(halfWidth, 0, (pageWidth - halfWidth), pageHeight).write(outputFile1);
-                mangaData.chapters[currentChapter].pages.push(outputFile1);
-                page++;
+              //  Save double images into two pages
+              const outputFile1 = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}_0.jpg`);
+              await pageImage.crop(halfWidth, 0, (pageWidth - halfWidth), pageHeight).write(outputFile1);
+              mangaData.chapters[currentChapter].pages.push(outputFile1);
 
-                pageImage = await jimp.default.read(base64toImage(background));
-                const outputFile2 = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`);
-                await pageImage.crop(0, 0, Math.round(pageWidth / 2), pageHeight).write(outputFile2);
-                mangaData.chapters[currentChapter].pages.push(outputFile2);
+              pageImage = await jimp.default.read(base64toImage(background));
+              const outputFile2 = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}_1.jpg`);
+              await pageImage.crop(0, 0, Math.round(pageWidth / 2), pageHeight).write(outputFile2);
+              mangaData.chapters[currentChapter].pages.push(outputFile2);
 
-              } else {
+            } else {
 
-                //  Save single page image
-                const outputFile = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`);
-                pageImage.write(outputFile);
-                mangaData.chapters[currentChapter].pages.push(outputFile);
-              }
+              //  Save single page image
+              const outputFile = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`);
+              pageImage.write(outputFile);
+              mangaData.chapters[currentChapter].pages.push(outputFile);
+            }
 
-              page++;
+            //  Turn page if needed
+            if (page % 2 === 0) {
+              console.log(`Turning page. Page no: ${page}`);
+              const btnPath = By.xpath(`//a[contains(@class, 'js-next-link')]`);
+              await driver.wait(until.elementLocated(btnPath));
+              const button = await driver.findElement(btnPath);
+              await button.click();
+            }
 
-              //  Turn page if needed
-              if (page === 1 || page % 2 !== 0) {
-                const btnPath = By.xpath(`//a[contains(@class, 'js-next-link')]`);
-                await driver.wait(until.elementLocated(btnPath));
-                const button = await driver.findElement(btnPath);
-                await button.click();
-              }
+            page++;
 
-              //  If there are more pages, get the next one
-              if (page <= images.length)
-                await getCurrentPages()
-              else {
-                  //  If no more pages, go to next chapter
-                  console.log(`All pages finished!`);
-                  currentChapter++;
-                  if (currentChapter < mangaData.chapters.length)
-                    await getCurrentChapter();
-              }
+        } else
+          console.error(`Image in chapter ${mangaChapter} page ${page} cannot be loaded!`);        
 
-          } else
-            console.error(`Image in chapter ${mangaChapter} page ${page} cannot be loaded!`);
-      }      
+      } while(page < images.length);
 
-      await getCurrentPages();
-    }
+      console.log(`All pages finished!`);
+      currentChapter++;
 
-    //  The download loop!
-    await getCurrentChapter();
+    } while (currentChapter < mangaData.chapters.length);
+
+    console.log('Download complete!');
+
+//  ===========================================================================================================================
 
     //  Thanks, browser, you can now go
     await driver.quit();
@@ -439,7 +473,6 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       console.log('Exporting to EPUB...');
 
       const content = [];
-      let lastEndChapter = 0;
       let index = 0;
       let volume = 1;
 
@@ -460,7 +493,6 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
         ) {
     
           const epubContent = {
-                  index,
                   title: `${mangaData.title} - Volume ${volume}.`,
                   author: (!!mangaData.author ? mangaData.author : mangaData.artist) || 'Unknown',
                   publisher: mangaData.publisher,
@@ -483,7 +515,6 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
             await new Epub(epubContent, filename).promise;
 
             content.length = 0;
-            lastEndChapter = index;
             volume++;
         }
 
@@ -493,7 +524,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
 //  ---------------------------------------------------------------------------------------------------------------
     }
 
-    deleteOutput(outDir, true);
+    // deleteOutput(outDir, true);
 
   } catch(err) {
     if (typeof driver !== 'undefined')
