@@ -313,7 +313,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
 //    Recursive chapter reader
 //  -----------------------------------------------------------------------------------------------------------
 
-    let currentChapter = mangaData.resumeChapter || 0;
+    let currentChapter = (params.resume === 'Yes') ? mangaData.resumeChapter+1 : 0;
 
 //  ===========================================================================================================================
 
