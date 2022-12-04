@@ -121,7 +121,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
 
     //  We will store the structure into this
     let mangaData = {
-      url: params.url.trim(),
+      url: !!params.url ? params.url.trim() : '',
       resumeChapter: 0,
       metadata: {
         publisher: '',
@@ -142,7 +142,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     let outDir;
 
     if (params.resume === 'Yes')
-      mangaData = JSON.parse(fs.readFileSync(process.cwd(), 'output', 'resume.json'));
+      mangaData = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'output', 'resume.json')));
 
     //  Set chapter division
     switch(params.divideChapters) {
