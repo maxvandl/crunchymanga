@@ -45,6 +45,14 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
     }
   },
   {
+      type: 'rawlist',
+      name: 'resume',
+      message: 'There seems to be an interrupted download. Would you like to resume it?',
+      default: localStorage.getItem('crunchyroll_divideChapters'),
+      choices: ['Yes', 'No'],
+      when: () => fs.existsSync(path.join(process.cwd(), 'output', 'resume.json'))
+  },
+  {
     type: 'input',
     name: 'url',
     message: 'Enter URL of the Crunchyroll manga:',
@@ -53,18 +61,8 @@ console.log(`CrunchyManga 1.0 by TomcatMWI - A handy utility to save mangas on y
       if ((/^https:\/\/(www\.)?crunchyroll.com\/comics\/manga\/(.*)\/volumes$/ig).test(value))
         return true
       throw Error('Invalid URL. The correct format is: https://crunchyroll.com/comics/manga/MANGA_TITLE/volumes');
-    }
-  },
-  {
-    type: 'input',
-    name: 'resumeUrl',
-    message: 'Continue an interrupted download? Enter the URL to the chapter to continue from or Enter to skip:',
-    default: '',
-    validate(value) {
-      if (!value || (/^https:\/\/(www\.)?crunchyroll.com\/manga\/(.+)\/read\/[\d\.\-\#]+$/ig).test(value))
-        return true;
-      throw Error('Invalid URL. The correct format is: https://crunchyroll.com/manga/MANGA_TITLE/read/CHAPTER');
-  }
+    },
+    when: answers => answers.resume !== 'Yes'
   },
   {
       type: 'rawlist',
@@ -122,20 +120,29 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
   try {
 
     //  We will store the structure into this
-    const mangaData = {
-      publisher: '',
-      firstPublished: '',
-      author: '',
-      artist: '',
-      copyright: '',
-      translator: '',
-      editor: '',
-      letterer: '',
+    let mangaData = {
+      url: params.url.trim(),
+      resumeChapter: 0,
+      metadata: {
+        publisher: '',
+        firstPublished: '',
+        author: '',
+        artist: '',
+        copyright: '',
+        translator: '',
+        editor: '',
+        letterer: '',
+      },
       title: '',
       cover: '',
       chapterDivide: 0,
       chapters: []
     }
+
+    let outDir;
+
+    if (params.resume === 'Yes')
+      mangaData = JSON.parse(fs.readFileSync(process.cwd(), 'output', 'resume.json'));
 
     //  Set chapter division
     switch(params.divideChapters) {
@@ -188,136 +195,125 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     await driver.wait(until.elementLocated(cookieButton));
     await driver.findElement(cookieButton).click();
 
-    //  Go to manga main page and get author info
-    console.log('Getting manga data...');
+    if (params.resume !== 'Yes') {
 
-    await driver.get(params.url);
+      //  Go to manga main page and get all info
+      console.log('Getting manga data...');
 
-    await driver.wait(async () => {
-      const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
-      const content = await driver.findElements(By.xpath(`//h3[contains(text(), 'More Information')]`));
-      
-      if (!!content.length)
-        return true;
+      await driver.get(mangaData.url);
 
-      if (!!errors.length) {
-        await driver.get(params.url);
-        return false;
-      }
-    }, 60000, 'Page load timed out', 2000);
-
-    const infoLines = await driver.findElements(By.xpath(`/html/body/div[2]/div/div[1]/div[3]/div/div[3]/ul/li[3]/ul/li`));
-    for (const [index, line] of infoLines.entries()) {
-      const dataLine = await line.getAttribute('innerHTML');
-      mangaData[Object.keys(mangaData)[index]] = dataLine.replace(/<(.*)>/gi, "").trim();
-    }
-    
-    //  Get whether the right or the left carousel arrow is active
-
-    const clickArrow = async (side) => {
-      console.log('Going to:', side)
-      let arrow = By.xpath(`//a[contains(@class, 'collection-carousel-${side}arrow')]`);
-      await driver.wait(until.elementLocated(arrow));
-      const arrowElement = await driver.findElement(arrow);
-
-      let finished = false;
-    
-      do {
-        await arrowElement.click();
-        await driver.wait(async () => {
-          const tempClasses = await arrowElement.getAttribute('class');
-          return !tempClasses.includes('loading');
-        });
-
-        finished = (await arrowElement.getAttribute('class')).includes('disabled');
-      } while (!finished);
-    }
-
-    //  Click all the way left and right
-    await clickArrow('left');
-    await clickArrow('right');
-
-    //  Now we lazy loaded all thumbnails, let's get their content
-    let chaptersXpath = By.xpath(`//div[contains(@class, 'collection-carousel-scrollable')]//a[contains(@class, 'block-link')]`);
-
-    await driver.wait(until.elementsLocated(chaptersXpath));
-    const chapters = await driver.findElements(chaptersXpath);
+      await driver.wait(async () => {
+        const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
+        const content = await driver.findElements(By.xpath(`//h3[contains(text(), 'More Information')]`));
         
-    for(const chapter of chapters) {
-      mangaData.chapters.push({
-        title: await chapter.getAttribute('title'),
-        url: await chapter.getAttribute('href'),
-        pages: []
-      });
-    }
+        if (!!content.length)
+          return true;
 
-    console.log(`This manga has ${mangaData.chapters.length} chapters.`);
+        if (!!errors.length) {
+          await driver.get(mangaData.url);
+          return false;
+        }
+      }, 60000, 'Page load timed out', 2000);
 
-    //  Save cover image URL
-    const coverXpath = By.xpath(`//img[contains(@class, 'poster')]`);
-    await driver.wait(until.elementLocated(coverXpath));
-    mangaData.cover = await driver.findElement(coverXpath).getAttribute('src');
-
-    //  Go to manga reader
-    await driver.get(mangaData.chapters[0].url);
-    
-    //  Retry for 1 minute if we got the error page
-    await driver.wait(async () => {
-      const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
-      const content = await driver.findElements(By.id('manga_reader'));
-      
-      if (!!content.length)
-        return true;
-
-      if (!!errors.length) {
-        await driver.get(mangaData.chapters[0].url);
-        return false;
+      const infoLines = await driver.findElements(By.xpath(`/html/body/div[2]/div/div[1]/div[3]/div/div[3]/ul/li[3]/ul/li`));
+      for (const [index, line] of infoLines.entries()) {
+        const dataLine = await line.getAttribute('innerHTML');
+        const key =  Object.keys(mangaData.metadata)[index];
+        mangaData.metadata[Object.keys(mangaData.metadata)[index]] = dataLine.replace(/<(.*)>/gi, "").trim();
       }
-    }, 60000, 'Page load timed out', 5000);
 
-    //  Get manga title
-    mangaData.title = await driver.findElement(By.xpath(`//header[@class='chapter-header']//a`)).getText();
+      //  Get whether the right or the left carousel arrow is active
 
-    //  Create save directory
-    const outDir = path.join(process.cwd(), 'output', sanitize(mangaData.title));
-    console.log(`Output directory: "${outDir}"`);
+      const clickArrow = async (side) => {
+        console.log('Going to:', side)
+        let arrow = By.xpath(`//a[contains(@class, 'collection-carousel-${side}arrow')]`);
+        await driver.wait(until.elementLocated(arrow));
+        const arrowElement = await driver.findElement(arrow);
 
-    if (fs.existsSync(outDir)) {
-      if (!params.resumeUrl)
-        await deleteOutput(outDir)
-    }
-      else
-        fs.mkdirSync(outDir);
+        let finished = false;
+      
+        do {
+          await arrowElement.click();
+          await driver.wait(async () => {
+            const tempClasses = await arrowElement.getAttribute('class');
+            return !tempClasses.includes('loading');
+          });
 
-    //  Download cover image
-    console.log(`Cover image: ${mangaData.cover}`);
-    const coverResponse = await fetch(mangaData.cover, { method: 'GET' });
-    const coverBlob = await coverResponse.blob();
-    const coverPath = path.join(outDir, 'cover.jpg');
-    fs.writeFileSync(coverPath, Buffer.from(await coverBlob.arrayBuffer()), 'binary');
-    mangaData.cover = coverPath;
+          finished = (await arrowElement.getAttribute('class')).includes('disabled');
+        } while (!finished);
+      }
+
+      //  Click all the way left and right
+      await clickArrow('left');
+      await clickArrow('right');
+
+      //  Now we lazy loaded all thumbnails, let's get their content
+      let chaptersXpath = By.xpath(`//div[contains(@class, 'collection-carousel-scrollable')]//a[contains(@class, 'block-link')]`);
+
+      await driver.wait(until.elementsLocated(chaptersXpath));
+      const chapters = await driver.findElements(chaptersXpath);
+          
+      for(const chapter of chapters) {
+        mangaData.chapters.push({
+          title: await chapter.getAttribute('title'),
+          url: await chapter.getAttribute('href'),
+          pages: []
+        });
+      }
+
+      console.log(`This manga has ${mangaData.chapters.length} chapters.`);
+
+      //  Save cover image URL
+      const coverXpath = By.xpath(`//img[contains(@class, 'poster')]`);
+      await driver.wait(until.elementLocated(coverXpath));
+      mangaData.cover = await driver.findElement(coverXpath).getAttribute('src');
+
+      //  Go to manga reader
+      await driver.get(mangaData.chapters[0].url);
+      
+      //  Retry for 1 minute if we got the error page
+      await driver.wait(async () => {
+        const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
+        const content = await driver.findElements(By.id('manga_reader'));
+        
+        if (!!content.length)
+          return true;
+
+        if (!!errors.length) {
+          await driver.get(mangaData.chapters[0].url);
+          return false;
+        }
+      }, 60000, 'Page load timed out', 5000);
+
+      //  Get manga title
+      mangaData.title = await driver.findElement(By.xpath(`//header[@class='chapter-header']//a`)).getText();
+
+      //  Create save directory
+      outDir = path.join(process.cwd(), 'output', sanitize(mangaData.title));
+      console.log(`Output directory: "${outDir}"`);
+
+      if (fs.existsSync(outDir)) {
+        if (!params.resumeUrl)
+          await deleteOutput(outDir)
+      }
+        else
+          fs.mkdirSync(outDir);
+
+      //  Download cover image
+      console.log(`Cover image: ${mangaData.cover}`);
+      const coverResponse = await fetch(mangaData.cover, { method: 'GET' });
+      const coverBlob = await coverResponse.blob();
+      const coverPath = path.join(outDir, 'cover.jpg');
+      fs.writeFileSync(coverPath, Buffer.from(await coverBlob.arrayBuffer()), 'binary');
+      mangaData.cover = coverPath;
+    } else
+      outDir = path.join(process.cwd(), 'output', sanitize(mangaData.title));
 
 //  -----------------------------------------------------------------------------------------------------------
 //    Recursive chapter reader
 //  -----------------------------------------------------------------------------------------------------------
 
-    let currentChapter = 0;
-
-    //  Find starting chapter if it was specified
-    if (!!params.resumeUrl) {
-
-      //  Find which chapter has the same URL as the resume URL
-      currentChapter = mangaData.chapters.findIndex(chapter => chapter.url === params.resumeUrl.trim());
-      if (currentChapter === -1)
-        fatalError('The specified chapter doesn\'t seem to exist!');
-
-      //  Delete all images from this chapter
-      fs.readdirSync(outDir)
-        .filter(x => Number(x.substring(0, 3)) >= currentChapter)
-        .forEach(filename => fs.unlinkSync(filename));
-
-      console.log(`Skipping to: ${mangaData.chapters[currentChapter].title}`);
-    }
+    let currentChapter = mangaData.resumeChapter || 0;
 
 //  ===========================================================================================================================
 
@@ -419,6 +415,9 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
 
       } while(page < images.length);
 
+      mangaData.resumeChapter = currentChapter;
+      fs.writeFileSync(path.join(process.cwd(), 'output', 'resume.json'), JSON.stringify(mangaData, null, 2));
+
       console.log(`All pages finished!`);
       currentChapter++;
 
@@ -446,25 +445,43 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       console.log('Exporting to PDF...');
 
       const pdfImages = [mangaData.cover];
-      let lastEndChapter = 0;
+      let index = 0;
+      let lastChapter = 0;
+      let chapterCounter = 0;
 
-      mangaData.chapters.forEach((chapter, index) => {
+      do {
+        const chapter = mangaData.chapters[index];
         pdfImages.push(...chapter.pages);
+        chapterCounter++;
 
         if (index > 0 && (
-          (mangaData.chapterDivide > 0 && index % mangaData.chapterDivide === 0) || 
+          (mangaData.chapterDivide > 0 && (index+1) % mangaData.chapterDivide === 0) || 
           index === mangaData.chapters.length-1)
         ) {
 
+          let filename = '.pdf';
+          if (params.chapterDivide !== divideChaptersChoices[0]) {
+
+            filename = chapterCounter > 1 
+            ? 
+            ` - ${String(lastChapter+1).padStart(3, '0')}-${String(index+1).padStart(3, '0')}.pdf`
+            :
+            ` - ${String(index+1).padStart(3, '0')}.pdf`;
+          }
+
+          filename = path.join(process.cwd(), 'output', sanitize(mangaData.title) + filename);          
+          
           imgToPDF(pdfImages, imgToPDF.sizes[params.pdf_pagesize])
-            .pipe(fs.createWriteStream(
-              path.join(process.cwd(), 'output', sanitize(mangaData.title) + ` - ${String(lastEndChapter+1).padStart(3, '0')}-${String(index).padStart(3, '0')}.pdf`)
-            ));
-            
+            .pipe(fs.createWriteStream(filename));
+
+          lastChapter = index;
+          chapterCounter = 0;
           pdfImages.length = 0;
-          lastEndChapter = index;
         }
-      });
+
+        index++;
+
+      } while (index < mangaData.chapters.length);
     }
 
     //  Convert downloaded images to EPUB
@@ -493,8 +510,8 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
     
           const epubContent = {
                   title: `${mangaData.title} - Volume ${volume}.`,
-                  author: (!!mangaData.author ? mangaData.author : mangaData.artist) || 'Unknown',
-                  publisher: mangaData.publisher,
+                  author: (!!mangaData.metadata.author ? mangaData.metadata.author : mangaData.metadata.artist) || 'Unknown',
+                  publisher: mangaData.metadata.publisher,
                   cover: mangaData.cover,
                   content,
                   version: 3,
@@ -503,11 +520,15 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
                   appendChapterTitles: false
               };
 
-            let filename = content.length > 1 
-            ? 
-            ` - ${String(content[0].index+1).padStart(3, '0')}-${String(index+1).padStart(3, '0')}.epub`
-            :
-            `- ${String(index+1).padStart(3, '0')}.epub`;
+              let filename = '.epub';
+              if (params.chapterDivide !== divideChaptersChoices[0]) {
+
+                filename = content.length > 1
+                ? 
+                ` - ${String(content[0].index+1).padStart(3, '0')}-${String(index+1).padStart(3, '0')}.epub`
+                :
+                ` - ${String(index+1).padStart(3, '0')}.epub`;
+              }
 
             filename = path.join(process.cwd(), 'output', sanitize(mangaData.title) + filename);
             
