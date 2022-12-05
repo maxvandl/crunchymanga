@@ -1,5 +1,5 @@
 import * as fs from 'fs';
-import { fatalError, base64toImage, deleteOutput, dump } from './utils.js';
+import { fatalError, base64toImage, deleteOutput, dump, loadUrl } from './utils.js';
 import inquirer from 'inquirer';
 import { LocalStorage } from 'node-localstorage';
 import sanitize from 'sanitize-filename';
@@ -200,20 +200,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       //  Go to manga main page and get all info
       console.log('Getting manga data...');
 
-      await driver.get(mangaData.url);
-
-      await driver.wait(async () => {
-        const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
-        const content = await driver.findElements(By.xpath(`//h3[contains(text(), 'More Information')]`));
-        
-        if (!!content.length)
-          return true;
-
-        if (!!errors.length) {
-          await driver.get(mangaData.url);
-          return false;
-        }
-      }, 60000, 'Page load timed out', 2000);
+      await loadUrl(driver, mangaData.url, `//h3[contains(text(), 'More Information')]`);
 
       const infoLines = await driver.findElements(By.xpath(`/html/body/div[2]/div/div[1]/div[3]/div/div[3]/ul/li[3]/ul/li`));
       for (const [index, line] of infoLines.entries()) {
@@ -269,21 +256,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       mangaData.cover = await driver.findElement(coverXpath).getAttribute('src');
 
       //  Go to manga reader
-      await driver.get(mangaData.chapters[0].url);
-      
-      //  Retry for 1 minute if we got the error page
-      await driver.wait(async () => {
-        const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
-        const content = await driver.findElements(By.id('manga_reader'));
-        
-        if (!!content.length)
-          return true;
-
-        if (!!errors.length) {
-          await driver.get(mangaData.chapters[0].url);
-          return false;
-        }
-      }, 60000, 'Page load timed out', 5000);
+      await loadUrl(driver, mangaData.chapters[0].url, 'manga_reader');
 
       //  Get manga title
       mangaData.title = await driver.findElement(By.xpath(`//header[@class='chapter-header']//a`)).getText();
@@ -323,23 +296,8 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       console.log(`Now downloading ${mangaData.chapters[currentChapter].title}...`);
 
       //  Load manga page
-      if (currentChapter > 0) {
-        await driver.get(mangaData.chapters[currentChapter].url);
-
-        //  Retry for 1 minute if we got the error page
-        await driver.wait(async () => {
-          const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
-          const content = await driver.findElements(By.id('manga_reader'));
-          
-          if (!!content.length)
-            return true;
-
-          if (!!errors.length) {
-            await driver.get(mangaData.chapters[currentChapter].url);
-            return false;
-          }
-        }, 60000, 'Page load timed out', 5000);
-      }
+      if (currentChapter > 0)
+        loadUrl(driver, mangaData.chapters[currentChapter].url, 'manga_reader');
 
       //  Pull scroll bar to page 1
       const barXpath = By.xpath(`/html/body/div[2]/div/div[1]/section/div/article/header/div/input`);
@@ -353,65 +311,87 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       let page = 0;
       const imageXpath = By.xpath(`//ol/li`);
       await driver.wait(until.elementsLocated(imageXpath));
-      const images = await driver.findElements(imageXpath);
+      let images = await driver.findElements(imageXpath);
 
       console.log(`Chapter has ${images.length} pages.`);
 
       //  Loop to get pages
       do {
-        console.log(`Retrieving ${mangaData.chapters[currentChapter].title}, page ${page}...`);
-        const image = images[page];
+        console.log(`Retrieving ${mangaData.chapters[currentChapter].title}, page ${page+1}...`);
+        let image = images[page];
 
         //  Wait until the image has a background-image tag
+        //  This throws a stale element error in Chapter 141.5 page 11
+        try {
+
+          console.log('Loading background image');
+          await driver.wait(
+            (async () => await image.getCssValue('background-image') !== 'none'), 10000
+          );
+
+        } catch(e) {
+          //  Sometimes the manga page is stale. Reload page if this happens.
+          console.log(`Failed to grab page ${page}! Reloading page to retry...`);
+          await loadUrl(driver, mangaData.chapters[currentChapter].url, 'manga_reader');
+          await driver.wait(until.elementsLocated(imageXpath));
+          images = await driver.findElements(imageXpath);
+          image = images[page];
+          if (!!image)
+            console.log('Rescue successful!')
+          else
+            throw new Error('Unable to rescue page! Please try to run again and resume download.');
+        };
+
         await driver.wait(
           (async () => await image.getCssValue('background-image') !== 'none'), 10000
-        );
+        );        
 
         //  Get background image
         const background = await image.getCssValue('background-image');
 
         if (background !== 'none') {
-          
-            //  Check if this is a double page (width > height)
-            let pageImage = await jimp.default.read(base64toImage(background));
-            const pageWidth = pageImage.getWidth();
-            const pageHeight = pageImage.getHeight();
+            
+          console.log(`Successfully loaded ${mangaData.chapters[currentChapter].title}, page ${page+1}!`);
 
-            //  If double, cut it into two files
-            if (pageWidth > pageHeight) {
-              const halfWidth = Math.round(pageWidth / 2);
+          //  Check if this is a double page (width > height)
+          let pageImage = await jimp.default.read(base64toImage(background));
+          const pageWidth = pageImage.getWidth();
+          const pageHeight = pageImage.getHeight();
 
-              //  Save double images into two pages
-              const outputFile1 = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}_0.jpg`);
-              await pageImage.crop(halfWidth, 0, (pageWidth - halfWidth), pageHeight).write(outputFile1);
-              mangaData.chapters[currentChapter].pages.push(outputFile1);
+          //  If double, cut it into two files
+          if (pageWidth > pageHeight) {
+            const halfWidth = Math.round(pageWidth / 2);
 
-              pageImage = await jimp.default.read(base64toImage(background));
-              const outputFile2 = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}_1.jpg`);
-              await pageImage.crop(0, 0, Math.round(pageWidth / 2), pageHeight).write(outputFile2);
-              mangaData.chapters[currentChapter].pages.push(outputFile2);
+            //  Save double images into two pages
+            const outputFile1 = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}_0.jpg`);
+            await pageImage.crop(halfWidth, 0, (pageWidth - halfWidth), pageHeight).write(outputFile1);
+            mangaData.chapters[currentChapter].pages.push(outputFile1);
 
-            } else {
+            pageImage = await jimp.default.read(base64toImage(background));
+            const outputFile2 = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}_1.jpg`);
+            await pageImage.crop(0, 0, Math.round(pageWidth / 2), pageHeight).write(outputFile2);
+            mangaData.chapters[currentChapter].pages.push(outputFile2);
 
-              //  Save single page image
-              const outputFile = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`);
-              pageImage.write(outputFile);
-              mangaData.chapters[currentChapter].pages.push(outputFile);
-            }
+          } else {
 
-            //  Turn page if needed
-            if (page % 2 === 0) {
-              console.log(`Turning page. Page no: ${page}`);
-              const btnPath = By.xpath(`//a[contains(@class, 'js-next-link')]`);
-              await driver.wait(until.elementLocated(btnPath));
-              const button = await driver.findElement(btnPath);
-              await button.click();
-            }
+            //  Save single page image
+            const outputFile = path.join(outDir, `${String(currentChapter).padStart(3, '0')}_p${String(page).padStart(3, '0')}.jpg`);
+            pageImage.write(outputFile);
+            mangaData.chapters[currentChapter].pages.push(outputFile);
+          }
 
-            page++;
+          //  Turn page if needed
+          if (page % 2 === 0) {
+            const btnPath = By.xpath(`//a[contains(@class, 'js-next-link')]`);
+            await driver.wait(until.elementLocated(btnPath));
+            const button = await driver.findElement(btnPath);
+            await button.click();
+          }
+
+          page++;
 
         } else
-          console.error(`Image in chapter ${mangaChapter} page ${page} cannot be loaded!`);        
+          console.error(`Image in chapter ${currentChapter} page ${page} cannot be loaded!`);        
 
       } while(page < images.length);
 
