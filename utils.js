@@ -40,7 +40,7 @@ export async function loadUrl(driver, url, xpath_string) {
         //  Retry for 1 minute if we got the error page
         await driver.wait(async () => {
           const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
-          const content = await driver.findElements(By.id(xpath_string));
+          const content = await driver.findElements(By.xpath(xpath_string));
           
           if (!!content.length)
             return true;

@@ -205,7 +205,6 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       const infoLines = await driver.findElements(By.xpath(`/html/body/div[2]/div/div[1]/div[3]/div/div[3]/ul/li[3]/ul/li`));
       for (const [index, line] of infoLines.entries()) {
         const dataLine = await line.getAttribute('innerHTML');
-        const key =  Object.keys(mangaData.metadata)[index];
         mangaData.metadata[Object.keys(mangaData.metadata)[index]] = dataLine.replace(/<(.*)>/gi, "").trim();
       }
 
@@ -256,7 +255,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
       mangaData.cover = await driver.findElement(coverXpath).getAttribute('src');
 
       //  Go to manga reader
-      await loadUrl(driver, mangaData.chapters[0].url, 'manga_reader');
+      await loadUrl(driver, mangaData.chapters[0].url, `//div[@id='manga_reader']`);
 
       //  Get manga title
       mangaData.title = await driver.findElement(By.xpath(`//header[@class='chapter-header']//a`)).getText();
