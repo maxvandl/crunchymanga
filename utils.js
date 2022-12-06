@@ -41,14 +41,15 @@ export async function loadUrl(driver, url, xpath_string) {
         await driver.wait(async () => {
           const errors = await driver.findElements(By.xpath(`//p[contains(text(), 'We are sorry. A team of shinobi is working to bring your anime back. Thank you for your patience.')]`));
           const content = await driver.findElements(By.xpath(xpath_string));
-          
-          if (!!content.length)
-            return true;
 
-          if (!!errors.length) {
-            await driver.get(url);
-            return false;
+          if (!!content.length) {
+            return true;
           }
-        }, 60000, 'Page load timed out', 5000);        
+
+          if (!!errors.length)
+            await driver.get(url);
+
+          return false;
+        }, 60000, 'Page load timed out', 3000);        
 
 }

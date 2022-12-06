@@ -296,7 +296,7 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
 
       //  Load manga page
       if (currentChapter > 0)
-        loadUrl(driver, mangaData.chapters[currentChapter].url, 'manga_reader');
+        loadUrl(driver, mangaData.chapters[currentChapter].url, `//div[@id='manga_reader']`);
 
       //  Pull scroll bar to page 1
       const barXpath = By.xpath(`/html/body/div[2]/div/div[1]/section/div/article/header/div/input`);
@@ -323,15 +323,14 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
         //  This throws a stale element error in Chapter 141.5 page 11
         try {
 
-          console.log('Loading background image');
           await driver.wait(
             (async () => await image.getCssValue('background-image') !== 'none'), 10000
           );
 
         } catch(e) {
           //  Sometimes the manga page is stale. Reload page if this happens.
-          console.log(`Failed to grab page ${page}! Reloading page to retry...`);
-          await loadUrl(driver, mangaData.chapters[currentChapter].url, 'manga_reader');
+          console.log(`Failed to grab page ${page+1}! Reloading page to retry...`);
+          await loadUrl(driver, mangaData.chapters[currentChapter].url, `//div[@id='manga_reader']`);
           await driver.wait(until.elementsLocated(imageXpath));
           images = await driver.findElements(imageXpath);
           image = images[page];
@@ -349,8 +348,6 @@ let browser = [Browser.CHROME, Browser.FIREFOX, Browser.EDGE, Browser.OPERA][bro
         const background = await image.getCssValue('background-image');
 
         if (background !== 'none') {
-            
-          console.log(`Successfully loaded ${mangaData.chapters[currentChapter].title}, page ${page+1}!`);
 
           //  Check if this is a double page (width > height)
           let pageImage = await jimp.default.read(base64toImage(background));
